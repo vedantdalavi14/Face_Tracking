@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+import * as faceapi from 'face-api.js';
 
 const dbName = 'face-tracker-db';
 const storeName = 'recorded-videos';
@@ -78,52 +79,99 @@ const FaceTracker = () => {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const audioStreamRef = useRef<MediaStream | null>(null);
 
-  const predictWebcam = useCallback(() => {
-    if (!videoRef.current || !faceDetectorRef.current) return;
+  const [activeTracker, setActiveTracker] = useState<'mediapipe' | 'faceapi'>('mediapipe');
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const rafRef = useRef<number | null>(null);
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const loadFaceApiModels = useCallback(async () => {
+    const MODEL_URL = '/models';
+    try {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
+      ]);
+      setModelsLoaded(true);
+    } catch (error) {
+      console.error('Error loading face-api.js models:', error);
+    }
+  }, []);
 
-    const canvasCtx = canvas.getContext('2d');
-    if (!canvasCtx) return;
+  const startFaceApiDetection = useCallback(() => {
+    if (detectionIntervalRef.current) {
+      clearInterval(detectionIntervalRef.current);
+    }
+    detectionIntervalRef.current = setInterval(async () => {
+      if (videoRef.current && canvasRef.current) {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const canvasCtx = canvas.getContext('2d');
+        if (!canvasCtx) return;
 
-    let lastTime = -1;
-    const renderLoop = () => {
-      const now = performance.now();
-      if (now > lastTime) {
-        if (faceDetectorRef.current && video.readyState === 4) {
-          const detections = faceDetectorRef.current.detectForVideo(video, Date.now());
-          
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        
+        const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceExpressions();
+        
+        canvasCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        if (detections) {
+          faceapi.draw.drawDetections(canvas, detections);
+          faceapi.draw.drawFaceLandmarks(canvas, detections);
+          faceapi.draw.drawFaceExpressions(canvas, detections);
+        }
+      }
+    }, 100);
+  }, []);
 
-          canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-          canvasCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  useEffect(() => {
+    const mediaPipeLoop = () => {
+      if (videoRef.current && faceDetectorRef.current && canvasRef.current) {
+        if (videoRef.current.readyState === 4) {
+          const detections = faceDetectorRef.current.detectForVideo(videoRef.current, Date.now());
+          const canvas = canvasRef.current;
+          const canvasCtx = canvas.getContext('2d');
 
-          if (detections && detections.detections) {
-            for (const detection of detections.detections) {
-              const { boundingBox } = detection;
-              if (boundingBox) {
-                canvasCtx.strokeStyle = '#FF0000';
-                canvasCtx.lineWidth = 2;
-                canvasCtx.strokeRect(
-                  boundingBox.originX,
-                  boundingBox.originY,
-                  boundingBox.width,
-                  boundingBox.height
-                );
+          if (canvasCtx) {
+            canvas.width = videoRef.current.videoWidth;
+            canvas.height = videoRef.current.videoHeight;
+            canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+            canvasCtx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+            if (detections && detections.detections) {
+              for (const detection of detections.detections) {
+                const { boundingBox } = detection;
+                if (boundingBox) {
+                  canvasCtx.strokeStyle = '#FF0000';
+                  canvasCtx.lineWidth = 2;
+                  canvasCtx.strokeRect(
+                    boundingBox.originX,
+                    boundingBox.originY,
+                    boundingBox.width,
+                    boundingBox.height
+                  );
+                }
               }
             }
           }
         }
       }
-      lastTime = now;
-      requestAnimationFrame(renderLoop);
+      rafRef.current = requestAnimationFrame(mediaPipeLoop);
     };
 
-    renderLoop();
-  }, []);
+    if (activeTracker === 'mediapipe') {
+      mediaPipeLoop();
+    }
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [activeTracker]);
+
 
   const startWebcam = useCallback(async () => {
     try {
@@ -132,12 +180,11 @@ const FaceTracker = () => {
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.addEventListener('loadeddata', predictWebcam);
       }
     } catch (error) {
       console.error('Error accessing webcam:', error);
     }
-  }, [predictWebcam]);
+  }, []);
 
   useEffect(() => {
     const initFaceDetector = async () => {
@@ -158,7 +205,26 @@ const FaceTracker = () => {
       }
     };
     initFaceDetector();
-  }, [startWebcam]);
+    loadFaceApiModels();
+  }, [startWebcam, loadFaceApiModels]);
+
+  useEffect(() => {
+    if (activeTracker === 'faceapi' && modelsLoaded) {
+      startFaceApiDetection();
+    } else if (detectionIntervalRef.current) {
+      clearInterval(detectionIntervalRef.current);
+      if (canvasRef.current) {
+        const canvasCtx = canvasRef.current.getContext('2d');
+        canvasCtx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
+    }
+
+    return () => {
+      if (detectionIntervalRef.current) {
+        clearInterval(detectionIntervalRef.current);
+      }
+    };
+  }, [activeTracker, modelsLoaded, startFaceApiDetection]);
 
   const handleToggleAudio = async () => {
     if (audioEnabled) {
@@ -254,12 +320,30 @@ const FaceTracker = () => {
   return (
     <div className="flex flex-col min-h-screen w-full bg-[#0D1117] text-gray-200 font-sans">
       <nav className="w-full bg-[#161B22]/80 backdrop-blur-sm border-b border-gray-800 shadow-md sticky top-0 z-50">
-          <div className="w-full max-w-6xl mx-auto flex justify-center items-center p-4">
+          <div className="w-full max-w-6xl mx-auto flex justify-between items-center p-4">
               <div className="relative inline-block">
                   <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-indigo-500 pb-2">
                   Face Tracker
                   </h1>
                   <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-indigo-500 rounded-full" />
+              </div>
+              <div className="flex items-center gap-4 p-1 rounded-full bg-gray-800 border border-gray-700">
+                <button
+                    onClick={() => setActiveTracker('mediapipe')}
+                    className={`px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 ${activeTracker === 'mediapipe' ? 'bg-indigo-500 text-white' : 'text-gray-400 hover:text-white'}`}
+                >
+                    MediaPipe
+                </button>
+                <button
+                    onClick={() => setActiveTracker('faceapi')}
+                    className={`px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 relative ${activeTracker === 'faceapi' ? 'bg-indigo-500 text-white' : 'text-gray-400 hover:text-white'}`}
+                    disabled={!modelsLoaded}
+                >
+                    FaceAPI.js
+                    {!modelsLoaded && (
+                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full animate-ping"></div>
+                    )}
+                </button>
               </div>
           </div>
       </nav>
