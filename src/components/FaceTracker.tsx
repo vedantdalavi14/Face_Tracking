@@ -370,8 +370,9 @@ const FaceTracker = () => {
                 audioEnabled 
                     ? 'bg-green-500/20 border-green-500 shadow-[0_0_15px_rgba(74,222,128,0.3)]' 
                     : 'bg-gray-800 hover:bg-gray-700 border-gray-600'
-                }`}
-                title={audioEnabled ? 'Disable Microphone' : 'Enable Microphone'}
+                } disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100`}
+                title={isRecording ? "Cannot change audio settings while recording" : (audioEnabled ? 'Disable Microphone' : 'Enable Microphone')}
+                disabled={isRecording}
             >
                 {audioEnabled ? (
                     <svg className="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
