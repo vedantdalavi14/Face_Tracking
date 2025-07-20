@@ -69,7 +69,10 @@ const FaceTracker = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [recordedVideos, setRecordedVideos] = useState<{ key: any; url: string }[]>([]);
+  const [recordedVideos, setRecordedVideos] = useState<{ key: IDBValidKey; url: string }[]>([]);
+  const recordedVideosRef = useRef(recordedVideos);
+  recordedVideosRef.current = recordedVideos;
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const faceDetectorRef = useRef<FaceDetector | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -241,7 +244,7 @@ const FaceTracker = () => {
     loadVideos();
 
     return () => {
-      recordedVideos.forEach((video) => URL.revokeObjectURL(video.url));
+      recordedVideosRef.current.forEach((video) => URL.revokeObjectURL(video.url));
       if (audioStreamRef.current) {
         audioStreamRef.current.getTracks().forEach((track) => track.stop());
       }
@@ -321,7 +324,7 @@ const FaceTracker = () => {
             {recordedVideos.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
                     {recordedVideos.map((video, index) => (
-                        <div key={video.key} className="p-0.5 rounded-xl bg-gradient-to-br from-purple-600/70 via-indigo-600/70 to-blue-600/70 group transform hover:-translate-y-2 transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-500/30">
+                        <div key={video.key.toString()} className="p-0.5 rounded-xl bg-gradient-to-br from-purple-600/70 via-indigo-600/70 to-blue-600/70 group transform hover:-translate-y-2 transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-500/30">
                             <div className="bg-[#161B22] p-4 rounded-[11px] h-full flex flex-col">
                                 <div className="aspect-video rounded-lg overflow-hidden mb-4">
                                     <video src={video.url} controls className="w-full h-full object-cover" />
