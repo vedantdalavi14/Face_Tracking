@@ -21,25 +21,46 @@ const openDB = (): Promise<IDBDatabase> => {
   });
 };
 
-const saveVideoToDB = async (blob: Blob) => {
+const saveVideoToDB = async (blob: Blob): Promise<IDBValidKey> => {
   const db = await openDB();
   const transaction = db.transaction(storeName, 'readwrite');
   const store = transaction.objectStore(storeName);
-  store.add(blob);
-  return new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
+  const request = store.add(blob);
+  return new Promise<IDBValidKey>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
   });
 };
 
-const getVideosFromDB = async (): Promise<Blob[]> => {
+const getVideosFromDB = async (): Promise<{ key: IDBValidKey; blob: Blob }[]> => {
+    const db = await openDB();
+    const transaction = db.transaction(storeName, 'readonly');
+    const store = transaction.objectStore(storeName);
+    const request = store.openCursor();
+    const results: { key: IDBValidKey; blob: Blob }[] = [];
+
+    return new Promise((resolve, reject) => {
+        request.onsuccess = (event) => {
+            const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+            if (cursor) {
+                results.push({ key: cursor.primaryKey, blob: cursor.value });
+                cursor.continue();
+            } else {
+                resolve(results);
+            }
+        };
+        request.onerror = () => reject(request.error);
+    });
+};
+
+const deleteVideoFromDB = async (key: IDBValidKey) => {
   const db = await openDB();
-  const transaction = db.transaction(storeName, 'readonly');
+  const transaction = db.transaction(storeName, 'readwrite');
   const store = transaction.objectStore(storeName);
-  const request = store.getAll();
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve(request.result);
-    transaction.onerror = () => reject(transaction.error);
+  const request = store.delete(key);
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    request.onerror = () => reject(request.error);
   });
 };
 
@@ -48,7 +69,7 @@ const FaceTracker = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [recordedVideos, setRecordedVideos] = useState<string[]>([]);
+  const [recordedVideos, setRecordedVideos] = useState<{ key: any; url: string }[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const faceDetectorRef = useRef<FaceDetector | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -172,9 +193,9 @@ const FaceTracker = () => {
       mediaRecorderRef.current.onstop = async () => {
         const blob = new Blob(chunks, { type: 'video/webm' });
         try {
-          await saveVideoToDB(blob);
+          const key = await saveVideoToDB(blob);
           const url = URL.createObjectURL(blob);
-          setRecordedVideos((prevVideos) => [...prevVideos, url]);
+          setRecordedVideos((prevVideos) => [...prevVideos, { key, url }]);
         } catch (error) {
           console.error('Failed to save video:', error);
         }
@@ -191,11 +212,27 @@ const FaceTracker = () => {
     }
   };
 
+  const handleDeleteVideo = async (key: IDBValidKey, url: string) => {
+    try {
+      await deleteVideoFromDB(key);
+      setRecordedVideos((prevVideos) => {
+        const newVideos = prevVideos.filter((video) => video.key !== key);
+        URL.revokeObjectURL(url);
+        return newVideos;
+      });
+    } catch (error) {
+      console.error('Failed to delete video:', error);
+    }
+  };
+
   useEffect(() => {
     const loadVideos = async () => {
       try {
-        const videoBlobs = await getVideosFromDB();
-        const videoUrls = videoBlobs.map(blob => URL.createObjectURL(blob));
+        const videosFromDB = await getVideosFromDB();
+        const videoUrls = videosFromDB.map(({ key, blob }) => ({
+          key,
+          url: URL.createObjectURL(blob),
+        }));
         setRecordedVideos(videoUrls);
       } catch (error) {
         console.error('Failed to load videos from DB:', error);
@@ -204,9 +241,10 @@ const FaceTracker = () => {
     loadVideos();
 
     return () => {
-        if (audioStreamRef.current) {
-            audioStreamRef.current.getTracks().forEach(track => track.stop());
-        }
+      recordedVideos.forEach((video) => URL.revokeObjectURL(video.url));
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
     };
   }, []);
 
@@ -282,22 +320,33 @@ const FaceTracker = () => {
             <h2 className="text-2xl sm:text-3xl font-bold mb-8 text-center text-gray-200">Recorded Videos</h2>
             {recordedVideos.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                    {recordedVideos.map((videoUrl, index) => (
-                        <div key={index} className="p-0.5 rounded-xl bg-gradient-to-br from-purple-600/70 via-indigo-600/70 to-blue-600/70 group transform hover:-translate-y-2 transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-500/30">
+                    {recordedVideos.map((video, index) => (
+                        <div key={video.key} className="p-0.5 rounded-xl bg-gradient-to-br from-purple-600/70 via-indigo-600/70 to-blue-600/70 group transform hover:-translate-y-2 transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-500/30">
                             <div className="bg-[#161B22] p-4 rounded-[11px] h-full flex flex-col">
                                 <div className="aspect-video rounded-lg overflow-hidden mb-4">
-                                    <video src={videoUrl} controls className="w-full h-full object-cover" />
+                                    <video src={video.url} controls className="w-full h-full object-cover" />
                                 </div>
                                 <div className="flex justify-between items-center mt-auto">
                                     <span className="font-semibold text-gray-300">Recording #{index + 1}</span>
-                                    <a
-                                        href={videoUrl}
-                                        download={`recording-${index + 1}.webm`}
-                                        className="flex items-center gap-2 text-sm text-indigo-300 hover:text-indigo-200 font-semibold py-2 px-3 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 transition-all duration-300"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                        Download
-                                    </a>
+                                    <div className="flex items-center gap-2">
+                                        <a
+                                            href={video.url}
+                                            download={`recording-${index + 1}.webm`}
+                                            className="flex items-center gap-2 text-sm text-indigo-300 hover:text-indigo-200 font-semibold py-2 px-3 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 transition-all duration-300"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                            Download
+                                        </a>
+                                        <button 
+                                          onClick={() => handleDeleteVideo(video.key, video.url)}
+                                          className="flex items-center gap-2 text-sm text-red-400 hover:text-red-300 font-semibold py-2 px-3 rounded-lg bg-red-500/10 hover:bg-red-500/20 transition-all duration-300"
+                                          title="Delete Video"
+                                        >
+                                            <svg className="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                                <path d="M7 4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2h4a1 1 0 1 1 0 2h-1.069l-.867 12.142A2 2 0 0 1 18.069 22H5.93a2 2 0 0 1-1.995-1.858L3.07 8H2a1 1 0 1 1 0-2h4V4zm2 2h6V4H9v2zM5.071 8l.857 12H18.07l.857-12H5.07z"/>
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
