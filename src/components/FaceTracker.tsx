@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
 
 const dbName = 'face-tracker-db';
@@ -54,61 +54,7 @@ const FaceTracker = () => {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const audioStreamRef = useRef<MediaStream | null>(null);
 
-  useEffect(() => {
-    const initFaceDetector = async () => {
-      try {
-        const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-        );
-        faceDetectorRef.current = await FaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-        });
-        startWebcam();
-      } catch (error) {
-        console.error('Error initializing face detector:', error);
-      }
-    };
-    initFaceDetector();
-  }, []);
-
-  const handleToggleAudio = async () => {
-    if (audioEnabled) {
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach(track => track.stop());
-        audioStreamRef.current = null;
-      }
-      setAudioEnabled(false);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioStreamRef.current = stream;
-        setAudioEnabled(true);
-      } catch (error) {
-        console.error('Error accessing microphone:', error);
-        alert('Could not access the microphone. Please check your browser permissions.');
-      }
-    }
-  };
-
-  const startWebcam = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720 },
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.addEventListener('loadeddata', predictWebcam);
-      }
-    } catch (error) {
-      console.error('Error accessing webcam:', error);
-    }
-  };
-
-  const predictWebcam = () => {
+  const predictWebcam = useCallback(() => {
     if (!videoRef.current || !faceDetectorRef.current) return;
 
     const video = videoRef.current;
@@ -153,6 +99,60 @@ const FaceTracker = () => {
     };
 
     renderLoop();
+  }, []);
+
+  const startWebcam = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720 },
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.addEventListener('loadeddata', predictWebcam);
+      }
+    } catch (error) {
+      console.error('Error accessing webcam:', error);
+    }
+  }, [predictWebcam]);
+
+  useEffect(() => {
+    const initFaceDetector = async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+        );
+        faceDetectorRef.current = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+        });
+        startWebcam();
+      } catch (error) {
+        console.error('Error initializing face detector:', error);
+      }
+    };
+    initFaceDetector();
+  }, [startWebcam]);
+
+  const handleToggleAudio = async () => {
+    if (audioEnabled) {
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(track => track.stop());
+        audioStreamRef.current = null;
+      }
+      setAudioEnabled(false);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioStreamRef.current = stream;
+        setAudioEnabled(true);
+      } catch (error) {
+        console.error('Error accessing microphone:', error);
+        alert('Could not access the microphone. Please check your browser permissions.');
+      }
+    }
   };
 
   const handleStartRecording = () => {
@@ -310,7 +310,7 @@ const FaceTracker = () => {
                           <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.55a2 2 0 01.45 2.122l-1.55 4.5A2 2 0 0116.55 18H7.45a2 2 0 01-1.9-1.378l-1.55-4.5A2 2 0 014.45 10H15zM15 10V5a2 2 0 00-2-2H9a2 2 0 00-2 2v5" />
                         </svg>
                         <h3 className="mt-4 text-xl font-semibold text-white">No recordings yet</h3>
-                        <p className="mt-2 text-base text-gray-400">Click the 'Record' button to start.</p>
+                        <p className="mt-2 text-base text-gray-400">Click the &apos;Record&apos; button to start.</p>
                     </div>
                 </div>
             )}
